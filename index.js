@@ -23,46 +23,38 @@ const {
 const cron = require("node-cron");
 const fs = require("fs");
 const axios = require("axios");
-const { createObjectCsvWriter } = require("csv-writer");
 const path = require("path");
 const express = require("express");
 const app = express();
 
-// --- ใช้แค่ token + clientId ที่เหลือบอทจะหาเองจากชื่อห้อง/โรล ---
+// --- อ่านค่าจาก Secrets ของ Replit ---
 const token = process.env.token;
-let guildId = process.env.guildId;
-let controlChannelId = process.env.controlChannelId;
-let logChannelId = process.env.logChannelId;
-let scoreChannelId = process.env.scoreChannelId;
-let mentionRoleId = process.env.mentionRoleId;
-let archiveCategoryId = process.env.archiveCategoryId;
-let adminRoleId = process.env.adminRoleId;
+const guildId = process.env.guildId;
+const controlChannelId = process.env.controlChannelId;
+const logChannelId = process.env.logChannelId;
+const scoreChannelId = process.env.scoreChannelId;
+const mentionRoleId = process.env.mentionRoleId;
+let targetChannelId = process.env.targetChannelId;
+const archiveCategoryId = process.env.archiveCategoryId;
+const adminRoleId = process.env.adminRoleId;
 const googleSheetUrl = process.env.googleSheetUrl;
 
-const targetChannelStatePath = path.join(__dirname, "channelState.json");
-function getTargetChannelId() {
-    if (fs.existsSync(targetChannelStatePath)) {
-        try {
-            const saved = JSON.parse(
-                fs.readFileSync(targetChannelStatePath, "utf8"),
-            );
-            if (saved.targetChannelId) return saved.targetChannelId;
-        } catch (error) {
-            console.error("อ่าน channelState.json ไม่ได้:", error.message);
-        }
-    }
-    return process.env.targetChannelId;
-}
-function saveTargetChannelId(id) {
-    fs.writeFileSync(
-        targetChannelStatePath,
-        JSON.stringify({ targetChannelId: id }, null, 2),
+// --- ตรวจสอบ Secrets ---
+if (
+    !token ||
+    !guildId ||
+    !controlChannelId ||
+    !logChannelId ||
+    !scoreChannelId ||
+    !mentionRoleId ||
+    !targetChannelId ||
+    !archiveCategoryId ||
+    !adminRoleId ||
+    !googleSheetUrl
+) {
+    console.error(
+        "ข้อมูลใน Secrets ไม่ครบถ้วน! กรุณาตรวจสอบทุกค่า รวมถึง googleSheetUrl",
     );
-}
-let targetChannelId = getTargetChannelId();
-
-if (!token) {
-    console.error("ไม่พบ token ใน Secrets!");
     process.exit(1);
 }
 
@@ -75,135 +67,7 @@ const client = new Client({
     ],
 });
 
-let configReady = false;
-function findByName(collection, patterns) {
-    return collection.find((item) =>
-        patterns.some((pattern) => item.name.toLowerCase().includes(pattern)),
-    );
-}
-async function resolveConfig() {
-    const guild = guildId
-        ? await client.guilds.fetch(guildId).catch(() => null)
-        : client.guilds.cache.first();
-    if (!guild) throw new Error("ไม่พบเซิร์ฟเวอร์ที่บอทอยู่");
-    guildId = guild.id;
-
-    const channels = await guild.channels.fetch();
-    const roles = await guild.roles.fetch();
-    const textChannels = channels.filter(
-        (channel) => channel.type === ChannelType.GuildText,
-    );
-    const categories = channels.filter(
-        (channel) => channel.type === ChannelType.GuildCategory,
-    );
-
-    controlChannelId ||= findByName(textChannels, [
-        "control",
-        "panel",
-        "ควบคุม",
-    ])?.id;
-    logChannelId ||= findByName(textChannels, ["log", "ล็อก", "บันทึก"])?.id;
-    scoreChannelId ||= findByName(textChannels, ["score", "คะแนน", "กระดาน"])?.id;
-    archiveCategoryId ||= findByName(categories, [
-        "archive",
-        "ประวัติ",
-        "เก็บ",
-    ])?.id;
-
-    if (!targetChannelId) {
-        const heistChannel = textChannels.find(
-            (channel) =>
-                /heist|งัด|ลูท/i.test(channel.name) &&
-                ![controlChannelId, logChannelId, scoreChannelId].includes(
-                    channel.id,
-                ),
-        );
-        const normalChannel = textChannels.find(
-            (channel) =>
-                ![controlChannelId, logChannelId, scoreChannelId].includes(
-                    channel.id,
-                ) && channel.parentId !== archiveCategoryId,
-        );
-        targetChannelId = heistChannel?.id || normalChannel?.id;
-    }
-
-    mentionRoleId ||=
-        findByName(roles, ["heist", "สมาชิก", "member"])?.id ||
-        guild.roles.everyone.id;
-    adminRoleId ||=
-        findByName(roles, ["admin", "แอดมิน", "owner", "staff"])?.id ||
-        guild.roles.highest.id;
-
-    const missing = Object.entries({
-        controlChannelId,
-        logChannelId,
-        scoreChannelId,
-        targetChannelId,
-        archiveCategoryId,
-        mentionRoleId,
-        adminRoleId,
-    })
-        .filter(([, value]) => !value)
-        .map(([key]) => key);
-    if (missing.length) {
-        throw new Error(`หา ID เหล่านี้ไม่เจอ: ${missing.join(", ")}`);
-    }
-    console.log(`ใช้เซิร์ฟเวอร์ "${guild.name}" และตรวจสอบห้อง/โรลเรียบร้อย`);
-}
-async function ensureConfig() {
-    if (!configReady) {
-        await resolveConfig();
-        configReady = true;
-    }
-}
-
 const selectionStates = new Map();
-
-const ACTIVITY_OPTIONS = [
-    { label: "💰 งัดร้าน", value: "งัดร้าน" },
-    { label: "🏦 งัดธนาคาร", value: "งัดธนาคาร" },
-    { label: "📦 ลูทบ็อก", value: "ลูทบ็อก" },
-];
-const TIME_OPTIONS = [
-    {
-        label: "☀️ พีคไทม์ (+10 คะแนน , 18:00 - 02:00)",
-        value: "peak",
-    },
-    {
-        label: "🌙 นอกเวลา (+2 คะแนน , 02:00 - 17:59)",
-        value: "offpeak",
-    },
-];
-
-const logFilePath = path.join(__dirname, "log.csv");
-const logHeader = [
-    { id: "timestamp", title: "timestamp" },
-    { id: "initiator", title: "initiator" },
-    { id: "activity", title: "activity" },
-    { id: "members", title: "members" },
-    { id: "notes", title: "notes" },
-    { id: "time", title: "time" },
-    { id: "imageUrlFront", title: "imageUrlFront" },
-    { id: "imageUrlBack", title: "imageUrlBack" },
-];
-const logCsvWriter = createObjectCsvWriter({
-    path: logFilePath,
-    header: logHeader,
-    append: true,
-});
-async function writeLog(record) {
-    try {
-        if (!fs.existsSync(logFilePath) || fs.statSync(logFilePath).size === 0) {
-            await createObjectCsvWriter({
-                path: logFilePath,
-                header: logHeader,
-            }).writeRecords([]);
-        }
-        await logCsvWriter.writeRecords([record]);
-    } catch (error) {
-        console.error("เขียน log.csv ไม่ได้:", error.message);
-    }
-}
 
 // ==================================================================
 //  ส่วนของระบบคะแนน (เวอร์ชัน 2 Scoreboards)
@@ -221,35 +85,129 @@ function saveScores(scores) {
     fs.writeFileSync(scoresFilePath, JSON.stringify(scores, null, 2));
 }
 
-const scoreboardStatePath = path.join(__dirname, "scoreboardState.json");
-function getScoreboardState() {
-    if (!fs.existsSync(scoreboardStatePath)) return {};
+const checkinsFilePath = path.join(__dirname, "checkins.json");
+const leavesFilePath = path.join(__dirname, "leaves.json");
+function readJsonFile(filePath) {
+    if (!fs.existsSync(filePath)) return {};
     try {
-        return JSON.parse(fs.readFileSync(scoreboardStatePath, "utf8"));
+        return JSON.parse(fs.readFileSync(filePath, "utf8"));
     } catch {
         return {};
     }
 }
-function saveScoreboardState(state) {
-    fs.writeFileSync(scoreboardStatePath, JSON.stringify(state, null, 2));
+function writeJsonFile(filePath, data) {
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
 }
-async function upsertBoardMessage(channel, key, embed) {
-    const state = getScoreboardState();
-    let message = null;
-    if (state[key]) {
-        try {
-            message = await channel.messages.fetch(state[key]);
-        } catch {
-            message = null;
+function replyOrEdit(interaction, payload) {
+    if (interaction.deferred || interaction.replied) {
+        return interaction.editReply(payload);
+    }
+    return interaction.reply(payload);
+}
+function bangkokDateKey(date = new Date()) {
+    return new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Bangkok",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+    }).format(date);
+}
+function addWeeklyScore(userId, tag, amount) {
+    const scores = getScores();
+    if (!scores[userId]) {
+        scores[userId] = {
+            tag,
+            weekly_score: 0,
+            monthly_score: 0,
+        };
+    }
+    scores[userId].weekly_score = (scores[userId].weekly_score || 0) + amount;
+    saveScores(scores);
+    return scores;
+}
+function buildLeaderboardEmbed() {
+    const scores = getScores();
+    const sortedWeekly = Object.entries(scores)
+        .sort(([, a], [, b]) => (b.weekly_score || 0) - (a.weekly_score || 0))
+        .slice(0, 10);
+    const sortedMonthly = Object.entries(scores)
+        .sort(([, a], [, b]) => (b.monthly_score || 0) - (a.monthly_score || 0))
+        .slice(0, 10);
+    const format = (entries, field) =>
+        entries
+            .filter(([, data]) => (data[field] || 0) > 0)
+            .map(([id, data], index) => {
+                const medals = ["🥇", "🥈", "🥉"];
+                const rank = index < 3 ? medals[index] : `**${index + 1}.**`;
+                return `${rank} <@${id}> - **${data[field] || 0}** คะแนน`;
+            })
+            .join("\n") || "ยังไม่มีข้อมูล";
+    return new EmbedBuilder()
+        .setColor("Gold")
+        .setTitle("🏆 Leaderboard แก๊งเบบี้เกรป 🏆")
+        .addFields(
+            { name: "📅 ประจำสัปดาห์", value: format(sortedWeekly, "weekly_score") },
+            { name: "📆 สะสมรายเดือน", value: format(sortedMonthly, "monthly_score") },
+        )
+        .setTimestamp()
+        .setFooter({ text: "อัปเดตล่าสุด" });
+}
+
+async function sendLeaveList(interaction, dateKey) {
+    const leaves = readJsonFile(leavesFilePath);
+    const day = leaves[dateKey] || {};
+    const entries = Object.entries(day)
+        .map(([id, data]) => `<@${id}> - ${data.reason || "-"}`)
+        .join("\n");
+    const embed = new EmbedBuilder()
+        .setColor("Orange")
+        .setTitle(`Leave Summary ${dateKey}`)
+        .setDescription(entries || "No leave requests for this date")
+        .setTimestamp()
+        .setFooter({ text: "Leave Request System" });
+    if (interaction.isRepliable()) {
+        if (interaction.deferred || interaction.replied) {
+            await interaction.editReply({ embeds: [embed] });
+        } else {
+            await interaction.reply({ embeds: [embed], ephemeral: true });
         }
     }
-    if (message) {
-        await message.edit({ embeds: [embed] });
-    } else {
-        message = await channel.send({ embeds: [embed] });
-        state[key] = message.id;
-        saveScoreboardState(state);
+}
+
+async function performCheckin(interaction, topic) {
+    const dateKey = bangkokDateKey();
+    const checkins = readJsonFile(checkinsFilePath);
+    if (!checkins[dateKey]) checkins[dateKey] = {};
+    if (checkins[dateKey][interaction.user.id]) {
+        const existing = checkins[dateKey][interaction.user.id];
+        return replyOrEdit(interaction, {
+            content: `วันนี้เช็คชื่อไปแล้วครับ (${existing.topic})`,
+            ephemeral: true,
+        });
     }
+    checkins[dateKey][interaction.user.id] = {
+        topic,
+        tag: interaction.user.tag,
+        time: new Date().toLocaleString("th-TH", { timeZone: "Asia/Bangkok" }),
+    };
+    writeJsonFile(checkinsFilePath, checkins);
+    addWeeklyScore(interaction.user.id, interaction.user.tag, 1);
+    await updateScoreboard();
+    return replyOrEdit(interaction, {
+        content: `เช็คชื่อ "${topic}" สำเร็จครับ ได้ +1 คะแนนประจำสัปดาห์`,
+        ephemeral: true,
+    });
+}
+
+async function performLeave(interaction, date, reason) {
+    if (!date || date.length !== 10) {
+        return replyOrEdit(interaction, { content: "ใช้รูปแบบวันที่ YYYY-MM-DD ครับ", ephemeral: true });
+    }
+    const leaves = readJsonFile(leavesFilePath);
+    if (!leaves[date]) leaves[date] = {};
+    leaves[date][interaction.user.id] = { reason: reason, tag: interaction.user.tag };
+    writeJsonFile(leavesFilePath, leaves);
+    return replyOrEdit(interaction, { content: `บันทึกการลาวันที่ ${date} เรียบร้อยครับ`, ephemeral: true });
 }
 
 async function updateScoreboard() {
@@ -311,8 +269,33 @@ async function updateScoreboard() {
             monthlyEmbed.setDescription(monthlyText);
         }
 
-        await upsertBoardMessage(channel, "weeklyMessageId", weeklyEmbed);
-        await upsertBoardMessage(channel, "monthlyMessageId", monthlyEmbed);
+        // --- ค้นหาและอัปเดตข้อความกระดานคะแนน ---
+        const recentMessages = await channel.messages.fetch({ limit: 50 });
+
+        const weeklyMessage = recentMessages.find(
+            (msg) =>
+                msg.author.id === client.user.id &&
+                msg.embeds[0]?.title.includes("ประจำสัปดาห์"),
+        );
+        const monthlyMessage = recentMessages.find(
+            (msg) =>
+                msg.author.id === client.user.id &&
+                msg.embeds[0]?.title.includes("สะสมรายเดือน"),
+        );
+
+        // อัปเดตหรือสร้างข้อความรายสัปดาห์
+        if (weeklyMessage) {
+            await weeklyMessage.edit({ embeds: [weeklyEmbed] });
+        } else {
+            await channel.send({ embeds: [weeklyEmbed] });
+        }
+
+        // อัปเดตหรือสร้างข้อความรายเดือน
+        if (monthlyMessage) {
+            await monthlyMessage.edit({ embeds: [monthlyEmbed] });
+        } else {
+            await channel.send({ embeds: [monthlyEmbed] });
+        }
 
         console.log("อัปเดตกระดานคะแนนทั้ง 2 บอร์ดเรียบร้อย");
     } catch (error) {
@@ -333,29 +316,27 @@ async function archiveAndCreateNewChannel() {
                 "หาห้องเป้าหมายหรือหมวดหมู่เก็บประวัติไม่เจอ!",
             );
 
-        const countdown = await originalChannel.send(
+        await originalChannel.send(
             "**⚠️ ประกาศจากเบบี้เกรป ⚠️**\nห้องนี้กำลังจะถูกรีเซ็ตในอีก **10 วินาที** นะคร้าฟ...",
         );
-        for (const [text, delay] of [
-            [
-                "**⚠️ ประกาศจากเบบี้เกรป ⚠️**\nอีก **5** วินาที...",
-                5000,
-            ],
-            ["...**4**...", 1000],
-            ["...**3**...", 1000],
-            ["...**2**...", 1000],
-            ["...**1**...", 1000],
-            ["**เริ่มทำการรีเซ็ตคับเบบี๋**", 1000],
-        ]) {
-            await new Promise((resolve) => setTimeout(resolve, delay));
-            await countdown.edit(text);
-        }
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        await originalChannel.send("...**5**...");
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await originalChannel.send("...**4**...");
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await originalChannel.send("...**3**...");
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await originalChannel.send("...**2**...");
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await originalChannel.send("...**1**...");
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await originalChannel.send("**เริ่มทำการรีเซ็ตคับเบบี๋**");
 
         const transformedPermissions =
             originalChannel.permissionOverwrites.cache.map((p) => ({
                 id: p.id,
-                allow: p.allow.bitfield,
-                deny: p.deny.bitfield,
+                allow: p.allow.bitfield.toString(),
+                deny: p.deny.bitfield.toString(),
                 type: p.type === 0 ? "role" : "member",
             }));
         const channelData = {
@@ -363,7 +344,7 @@ async function archiveAndCreateNewChannel() {
             type: originalChannel.type,
             topic: originalChannel.topic,
             position: originalChannel.position,
-            parent: originalChannel.parentId,
+            parent: originalChannel.parent,
             permissionOverwrites: transformedPermissions,
         };
         const date = new Date();
@@ -398,8 +379,9 @@ async function archiveAndCreateNewChannel() {
         );
 
         targetChannelId = newChannel.id;
-        saveTargetChannelId(newChannel.id);
-        console.log(`อัปเดต ID ห้องเป้าหมายเป็น: ${targetChannelId}`);
+        console.log(
+            `อัปเดต ID ห้องเป้าหมายในหน่วยความจำเป็น: ${targetChannelId}`,
+        );
 
         await newChannel.send(
             `hello 1975 ⋆｡˚ ☁︎ ˚｡⋆｡ \nเบบี้เกรปลบห้องเก่าสร้างห้องใหม่ให้ละคร้าฟฟ! ก็เหมือนอกไก่ต้องมีคนหมัก อกหักต้องมีคนใหม่นะคะพี่ๆ สุดท้ายนี้องุ่นโสด จุ้บๆ`,
@@ -412,27 +394,94 @@ async function archiveAndCreateNewChannel() {
 // ==================================================================
 //  Event Handlers (ศูนย์บัญชาการ)
 // ==================================================================
-client.once("ready", async () => {
+client.once("ready", () => {
     console.log(`เบบี้เกรป (${client.user.tag}) พร้อมทำงานทุกอย่างแล้วค่า! 🍇`);
-    try {
-        await ensureConfig();
-        cron.schedule(
-            "0 0 */3 * *",
-            () => {
-                archiveAndCreateNewChannel();
-            },
-            { scheduled: true, timezone: "Asia/Bangkok" },
-        );
-        console.log("ตั้งเวลาระบบเก็บห้องแชทเรียบร้อย!");
-        await updateScoreboard();
-    } catch (error) {
-        console.error("ตั้งค่าห้อง/โรลอัตโนมัติไม่สำเร็จ:", error);
-    }
+    cron.schedule(
+        "0 0 */3 * *",
+        () => {
+            archiveAndCreateNewChannel();
+        },
+        { scheduled: true, timezone: "Asia/Bangkok" },
+    );
+    console.log("ตั้งเวลาระบบเก็บห้องแชทเรียบร้อย!");
+    updateScoreboard();
 });
 
 client.on("interactionCreate", async (interaction) => {
     try {
-        await ensureConfig();
+        if (interaction.isButton() && interaction.customId === "checkin_open") {
+            const select = new StringSelectMenuBuilder()
+                .setCustomId("checkin_topic_" + interaction.user.id)
+                .setPlaceholder("เลือกหัวข้อเช็คชื่อรายวัน")
+                .addOptions([
+                    { label: "วอ", value: "วอ" },
+                    { label: "ประชุม", value: "ประชุม" },
+                    { label: "พีคไทม์", value: "พีคไทม์" },
+                    { label: "กำหนดเอง", value: "custom" },
+                ]);
+            return interaction.reply({
+                content: "เลือกหัวข้อเช็คชื่อรายวัน",
+                components: [new ActionRowBuilder().addComponents(select)],
+                ephemeral: true,
+            });
+        }
+
+        if (
+            interaction.isStringSelectMenu() &&
+            interaction.customId.startsWith("checkin_topic_")
+        ) {
+            const value = interaction.values[0];
+            if (value === "custom") {
+                const input = new TextInputBuilder()
+                    .setCustomId("checkin_topic_input")
+                    .setLabel("หัวข้อที่ต้องการ")
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(true);
+                const modal = new ModalBuilder()
+                    .setCustomId("checkin_custom_modal_" + interaction.user.id)
+                    .setTitle("เช็คชื่อกำหนดเอง")
+                    .addComponents(new ActionRowBuilder().addComponents(input));
+                return interaction.showModal(modal);
+            }
+            return performCheckin(interaction, value);
+        }
+
+        if (interaction.isButton() && interaction.customId === "leave_open") {
+            const dateInput = new TextInputBuilder()
+                .setCustomId("leave_date_input")
+                .setLabel("วันที่ (YYYY-MM-DD)")
+                .setPlaceholder(bangkokDateKey())
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true);
+            const reasonInput = new TextInputBuilder()
+                .setCustomId("leave_reason_input")
+                .setLabel("เหตุผล")
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true);
+            const modal = new ModalBuilder()
+                .setCustomId("leave_modal_" + interaction.user.id)
+                .setTitle("แจ้งลา")
+                .addComponents(
+                    new ActionRowBuilder().addComponents(dateInput),
+                    new ActionRowBuilder().addComponents(reasonInput),
+                );
+            return interaction.showModal(modal);
+        }
+
+        if (interaction.isButton() && interaction.customId === "leave_list") {
+            return sendLeaveList(interaction, bangkokDateKey());
+        }
+
+        if (
+            interaction.isButton() &&
+            interaction.customId === "leaderboard_show"
+        ) {
+            return interaction.reply({
+                embeds: [buildLeaderboardEmbed()],
+                ephemeral: true,
+            });
+        }
+
         // --- จัดการการกดปุ่ม "เริ่มบันทึกผลงาน" ---
         if (
             interaction.isButton() &&
@@ -446,11 +495,19 @@ client.on("interactionCreate", async (interaction) => {
             const activitySelect = new StringSelectMenuBuilder()
                 .setCustomId(`activity_select_menu_${interaction.user.id}`)
                 .setPlaceholder("1. เลือกประเภทกิจกรรม")
-                .addOptions(ACTIVITY_OPTIONS);
+                .addOptions([
+                    { label: "💰 งัดร้าน", value: "งัดร้าน" },
+                    { label: "🏦 งัดธนาคาร", value: "งัดธนาคาร" },
+                    { label: "📦 ลูทบ็อก", value: "ลูทบ็อก" },
+                    { label: "🛩️ แอร์ดรอป", value: "แอร์ดรอป" },
+                ]);
             const timeSelect = new StringSelectMenuBuilder()
                 .setCustomId(`time_select_menu_${interaction.user.id}`)
                 .setPlaceholder("2. เลือกช่วงเวลา")
-                .addOptions(TIME_OPTIONS);
+                .addOptions([
+                    { label: "☀️ พีคไทม์ (+10 คะแนน , 18:00 - 02:00)", value: "peak" },
+                    { label: "🌙 นอกเวลา (+2 คะแนน , 02:00 - 17:59)", value: "offpeak" },
+                ]);
             const memberSelect = new UserSelectMenuBuilder()
                 .setCustomId(`member_select_menu_${interaction.user.id}`)
                 .setPlaceholder("3. เลือกสมาชิกที่เข้าร่วม")
@@ -488,18 +545,19 @@ client.on("interactionCreate", async (interaction) => {
             const newActivitySelect = StringSelectMenuBuilder.from(
                 interaction.message.components[0].components[0],
             ).setOptions(
-                ACTIVITY_OPTIONS.map((opt) => ({
-                    ...opt,
-                    default: opt.value === state.activity,
-                })),
+                interaction.message.components[0].components[0].options.map(
+                    (opt) => ({
+                        ...opt,
+                        default: opt.value === state.activity,
+                    }),
+                ),
             );
             const newTimeSelect = StringSelectMenuBuilder.from(
                 interaction.message.components[1].components[0],
             ).setOptions(
-                TIME_OPTIONS.map((opt) => ({
-                    ...opt,
-                    default: opt.value === state.time,
-                })),
+                interaction.message.components[1].components[0].options.map(
+                    (opt) => ({ ...opt, default: opt.value === state.time }),
+                ),
             );
             const newMemberSelect = UserSelectMenuBuilder.from(
                 interaction.message.components[2].components[0],
@@ -530,7 +588,6 @@ client.on("interactionCreate", async (interaction) => {
                 !state ||
                 !state.activity ||
                 !state.time ||
-                !state.members ||
                 state.members.length === 0
             ) {
                 return interaction.reply({
@@ -595,15 +652,55 @@ client.on("interactionCreate", async (interaction) => {
             await interaction.showModal(modal);
         }
 
+        if (
+            interaction.isModalSubmit() &&
+            interaction.customId.startsWith("checkin_custom_modal_")
+        ) {
+            await interaction.deferReply({ ephemeral: true });
+            return performCheckin(
+                interaction,
+                interaction.fields.getTextInputValue("checkin_topic_input"),
+            );
+        }
+
+        if (
+            interaction.isModalSubmit() &&
+            interaction.customId.startsWith("leave_modal_")
+        ) {
+            await interaction.deferReply({ ephemeral: true });
+            return performLeave(
+                interaction,
+                interaction.fields.getTextInputValue("leave_date_input"),
+                interaction.fields.getTextInputValue("leave_reason_input"),
+            );
+        }
+
         // --- จัดการการส่งฟอร์ม Modal ---
         if (interaction.isModalSubmit()) {
             await interaction.deferReply({ ephemeral: true });
             const userId = interaction.user.id;
             const state = selectionStates.get(userId);
-            if (!state)
-                return interaction.editReply({
-                    content: "ไม่พบข้อมูลรายการนี้ กรุณากดปุ่มเริ่มใหม่",
-                });
+            if (!state) return;
+            try {
+                if (state.buttonInteraction) {
+                    const originalMessage = state.buttonInteraction.message;
+                    const disabledComponents = originalMessage.components.map(
+                        (row) => {
+                            const newRow = ActionRowBuilder.from(row);
+                            newRow.components.forEach((comp) =>
+                                comp.setDisabled(true),
+                            );
+                            return newRow;
+                        },
+                    );
+                    await state.buttonInteraction.editReply({
+                        content: "รายการนี้ถูกส่งเรียบร้อยแล้ว ✅",
+                        components: disabledComponents,
+                    });
+                }
+            } catch (err) {
+                console.log("ไม่สามารถแก้ไขข้อความเดิมได้:", err.message);
+            }
             const { activity, time, members: memberIds } = state;
             let imageUrlFront, imageUrlBack, notes;
             if (interaction.customId.startsWith("heist_store_modal")) {
@@ -624,11 +721,9 @@ client.on("interactionCreate", async (interaction) => {
                     interaction.fields.getTextInputValue("notes_input") ||
                     "ไม่มี";
             } else {
-                return interaction.editReply({
-                    content: "ฟอร์มไม่ถูกต้อง กรุณาลองใหม่",
-                });
+                return;
             }
-            // --- ตรวจสอบความถูกต้องของ URL ---
+            // --- เพิ่มส่วนนี้เข้ามา: ตรวจสอบความถูกต้องของ URL (เวอร์ชันใหม่) ---
             // 1. ต้องขึ้นต้นด้วย https://cdn.discordapp.com/
             // 2. ต้องไม่มีตัวอักษรภาษาไทย
             const discordCdnRegex = /^https:\/\/((cdn|media)\.discordapp\.(com|net))\/[^\s\u0E00-\u0E7F]*$/;
@@ -649,21 +744,9 @@ client.on("interactionCreate", async (interaction) => {
             // --- จบส่วนที่เพิ่ม ---
             const scoreToAdd = time === "peak" ? 10 : 2;
             const timeText = time === "peak" ? "พีคไทม์" : "นอกเวลา";
-            let memberObjects = interaction.guild.members.cache.filter(
+            const memberObjects = interaction.guild.members.cache.filter(
                 (member) => memberIds.includes(member.id),
             );
-            if (memberObjects.size < memberIds.length) {
-                try {
-                    const fetched = await interaction.guild.members.fetch({
-                        user: memberIds,
-                    });
-                    memberObjects = fetched.filter((member) =>
-                        memberIds.includes(member.id),
-                    );
-                } catch (error) {
-                    console.error("โหลดข้อมูลสมาชิกไม่ได้:", error.message);
-                }
-            }
             if (memberObjects.size === 0) {
                 return interaction.editReply({
                     content:
@@ -690,31 +773,25 @@ client.on("interactionCreate", async (interaction) => {
             });
             saveScores(scores);
             await updateScoreboard();
-            const payload = {
-                timestamp: new Date().toLocaleString("th-TH", {
-                    timeZone: "Asia/Bangkok",
-                }),
-                initiator: interaction.user.tag,
-                activity,
-                members: memberDisplayNames.join(", "),
-                notes,
-                time,
-                imageUrlFront,
-                imageUrlBack,
-            };
-            await writeLog(payload);
-            if (googleSheetUrl) {
-                try {
-                    await axios.post(googleSheetUrl, payload, {
-                        timeout: 5000,
-                    });
-                    console.log("ส่งข้อมูลไปที่ Google Sheets สำเร็จ!");
-                } catch (error) {
-                    console.error(
-                        "ส่งข้อมูลไปที่ Google Sheets ไม่ได้:",
-                        error.message,
-                    );
-                }
+            try {
+                const payload = {
+                    timestamp: new Date().toLocaleString("th-TH", {
+                        timeZone: "Asia/Bangkok",
+                    }),
+                    initiator: interaction.user.tag,
+                    activity: activity,
+                    members: memberDisplayNames,
+                    notes: notes,
+                    imageUrlFront: imageUrlFront,
+                    imageUrlBack: imageUrlBack,
+                };
+                await axios.post(googleSheetUrl, payload);
+                console.log("ส่งข้อมูลไปที่ Google Sheets สำเร็จ!");
+            } catch (error) {
+                console.error(
+                    "เกิดข้อผิดพลาดขณะส่งข้อมูลไปที่ Google Sheets:",
+                    error.message,
+                );
             }
             // --- สร้าง Embed (เพิ่ม Field ช่วงเวลา) ---
             const embed = new EmbedBuilder()
@@ -753,29 +830,9 @@ client.on("interactionCreate", async (interaction) => {
                 content: `ผลงานใหม่จาก <@&${mentionRoleId}>`,
                 embeds: [embed],
             });
-            try {
-                if (state.buttonInteraction) {
-                    const originalMessage = state.buttonInteraction.message;
-                    const disabledComponents = originalMessage.components.map(
-                        (row) => {
-                            const newRow = ActionRowBuilder.from(row);
-                            newRow.components.forEach((comp) =>
-                                comp.setDisabled(true),
-                            );
-                            return newRow;
-                        },
-                    );
-                    await state.buttonInteraction.editReply({
-                        content: "รายการนี้ถูกส่งเรียบร้อยแล้ว ✅",
-                        components: disabledComponents,
-                    });
-                }
-            } catch (err) {
-                console.log("ไม่สามารถแก้ไขข้อความเดิมได้:", err.message);
-            }
             await interaction.editReply({
                 content:
-                    "บันทึกผลงานสำเร็จ! ข้อมูลถูกเก็บใน log.csv และส่งไปที่ห้อง Log เรียบร้อย",
+                    "บันทึกผลงานสำเร็จ! ข้อมูลถูกส่งไปที่ห้อง Log เรียบร้อย",
             });
             selectionStates.delete(userId);
         }
@@ -783,13 +840,39 @@ client.on("interactionCreate", async (interaction) => {
         // --- จัดการคำสั่ง Slash Command ---
         if (interaction.isChatInputCommand()) {
             const { commandName } = interaction;
+            const publicCommands = [
+                "checkin",
+                "leave",
+                "leave_list",
+                "leaderboard",
+            ];
             if (
+                !publicCommands.includes(commandName) &&
                 !interaction.member.permissions.has(
                     PermissionsBitField.Flags.Administrator,
                 )
             ) {
                 return interaction.reply({
                     content: "คุณไม่มีสิทธิ์ใช้คำสั่งนี้!",
+                    ephemeral: true,
+                });
+            }
+            if (commandName === "checkin") {
+                const topic = interaction.options.getString("topic") || "วอ";
+                return performCheckin(interaction, topic);
+            }
+            if (commandName === "leave") {
+                const date = interaction.options.getString("date");
+                const reason = interaction.options.getString("reason");
+                return performLeave(interaction, date, reason);
+            }
+            if (commandName === "leave_list") {
+                const date = interaction.options.getString("date") || bangkokDateKey();
+                return sendLeaveList(interaction, date);
+            }
+            if (commandName === "leaderboard") {
+                return interaction.reply({
+                    embeds: [buildLeaderboardEmbed()],
                     ephemeral: true,
                 });
             }
@@ -896,13 +979,10 @@ client.on("interactionCreate", async (interaction) => {
 // --- ส่วนของ MessageCreate (เหมือนเดิม) ---
 client.on("messageCreate", async (message) => {
     if (message.author.bot) return;
-    await ensureConfig();
 
     if (
         message.content === "!reset" &&
-        message.member?.permissions.has(
-            PermissionsBitField.Flags.Administrator,
-        )
+        message.member?.permissions.has("Administrator")
     ) {
         await message.reply("รับแซ่บคร้าฟฟ เดะจัดการให้คับเธอ (๑•᎑< ๑)♡");
         await archiveAndCreateNewChannel();
@@ -914,7 +994,12 @@ client.on("messageCreate", async (message) => {
             .addFields(
                 {
                     name: "--- 📝 สำหรับสมาชิกทุกคน ---",
-                    value: "• **กดปุ่ม** ในห้อง `#heist-control` เพื่อเริ่มบันทึกผลงาน",
+                    value:
+                        "• **กดปุ่ม** ในห้อง `#heist-control` เพื่อบันทึกผลงาน / เช็คชื่อ / แจ้งลา / ดูตารางลา / ดูตารางคะแนน\n" +
+                        "• `/checkin` - เช็คชื่อรายวัน (วอ / ประชุม / พีคไทม์ หรือกำหนดเอง)\n" +
+                        "• `/leave` - แจ้งลาพร้อมระบุวันที่และเหตุผล\n" +
+                        "• `/leave_list` - ดูตารางสรุปคนลา\n" +
+                        "• `/leaderboard` - ดูตารางคะแนนรายสัปดาห์และรายเดือน",
                 },
                 {
                     name: "--- 🛠️ สำหรับแอดมินเท่านั้น ---",
@@ -959,9 +1044,8 @@ app.get("/", (req, res) => {
     res.send("Baby Grape is awake!");
 });
 
-const port = process.env.PORT || 3000;
-app.listen(port, "0.0.0.0", () => {
-    console.log(`เว็บเซิร์ฟเวอร์สำหรับ UptimeRobot เริ่มทำงานที่ port ${port}`);
+app.listen(3000, () => {
+    console.log("เว็บเซิร์ฟเวอร์สำหรับ UptimeRobot เริ่มทำงานที่ port 3000");
 });
 
 // --- ล็อกอินบอท ---

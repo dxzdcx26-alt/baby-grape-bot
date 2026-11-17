@@ -135,3 +135,5 @@ dist
 # Runtime state
 channelState.json
 scoreboardState.json
+checkins.json
+leaves.json

@@ -7,7 +7,7 @@ on:
 
 concurrency:
   group: baby-grape-bot
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   bot:
@@ -32,8 +32,16 @@ jobs:
         run: |
           cat > .env <<'EOF'
           token=${{ secrets.TOKEN }}
-          clientId=${{ secrets.CLIENT_ID }}
           guildId=1572313951121711296
+          clientId=1572296382813835284
+          controlChannelId=1572317026037276954
+          logChannelId=1572317027794686143
+          scoreChannelId=1572317029451567144
+          mentionRoleId=1572313951121711296
+          targetChannelId=1572317031758569513
+          archiveCategoryId=1572317023906824325
+          adminRoleId=1572316564387008585
+          googleSheetUrl=${{ secrets.GOOGLE_SHEET_URL }}
           EOF
 
       - name: Deploy slash commands

@@ -1,49 +1,34 @@
 // ไฟล์: send-panel.js (เวอร์ชันอ่านจาก Secrets)
 
-require('dotenv').config();
-const { Client, GatewayIntentBits, ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
+require("dotenv").config();
+const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
 
+// --- แก้ไขตรงนี้: อ่านค่าจาก Secrets โดยตรง ---
 const token = process.env.token;
+const controlChannelId = process.env.controlChannelId;
 
-if (!token) {
-    console.error('ไม่พบ token ใน Secrets! กรุณาตรวจสอบ');
-    process.exit(1);
+// ตรวจสอบว่ามีค่าที่จำเป็นใน Secrets หรือไม่
+if (!token || !controlChannelId) {
+    console.error('ไม่พบ token หรือ controlChannelId ใน Secrets! กรุณาตรวจสอบ');
+    process.exit(1); // หยุดการทำงาน
 }
+// --- จบส่วนแก้ไข ---
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 client.once('ready', async () => {
     console.log('บอทพร้อมแล้ว! กำลังจะส่งแผงควบคุม...');
 
-    const guild = process.env.guildId
-        ? client.guilds.cache.get(process.env.guildId) ||
-          (await client.guilds.fetch(process.env.guildId).catch(() => null))
-        : client.guilds.cache.first();
-    if (!guild) {
-        console.error('ไม่พบเซิร์ฟเวอร์ที่บอทอยู่!');
-        return client.destroy();
-    }
-
-    const channels = await guild.channels.fetch();
-    const channel =
-        (process.env.controlChannelId &&
-            channels.get(process.env.controlChannelId)) ||
-        channels.find(
-            (ch) =>
-                ch.type === ChannelType.GuildText &&
-                /control|panel|ควบคุม/i.test(ch.name),
-        );
+    const channel = await client.channels.fetch(controlChannelId);
     if (!channel) {
-        console.error('ไม่พบห้องควบคุม (ชื่อห้องต้องมี control/panel/ควบคุม)');
+        console.error(`ไม่พบห้อง controlChannelId ที่มี ID: ${controlChannelId}!`);
         return client.destroy();
     }
-    console.log(`ใช้ห้องควบคุม #${channel.name}`);
 
     try {
         const messages = await channel.messages.fetch({ limit: 50 });
-        const oldPanels = messages.filter((msg) => msg.author.id === client.user.id);
-        if (oldPanels.size > 0) await channel.bulkDelete(oldPanels, true);
-        console.log(`ลบแผงเก่า ${oldPanels.size} ข้อความในห้องควบคุมเรียบร้อย`);
+        if (messages.size > 0) await channel.bulkDelete(messages, true);
+        console.log(`ลบข้อความเก่า ${messages.size} ข้อความในห้องควบคุมเรียบร้อย`);
     } catch (error) {
         console.warn('ไม่สามารถลบข้อความเก่าได้ (อาจจะไม่มีสิทธิ์ หรือข้อความเก่าเกิน 14 วัน):', error.message);
     }
@@ -57,13 +42,36 @@ client.once('ready', async () => {
     const row = new ActionRowBuilder()
         .addComponents(
             new ButtonBuilder()
-                .setCustomId('start_heist_report') // ID สำหรับเริ่มระบบ Dropdown
-                .setLabel('📝 เริ่มบันทึกผลงาน')
+                .setCustomId('start_heist_report')
+                .setLabel('📝 บันทึกผลงาน')
                 .setStyle(ButtonStyle.Success)
                 .setEmoji('💰'),
+            new ButtonBuilder()
+                .setCustomId('checkin_open')
+                .setLabel('✅ เช็คชื่อรายวัน')
+                .setStyle(ButtonStyle.Primary)
+                .setEmoji('📝'),
+            new ButtonBuilder()
+                .setCustomId('leaderboard_show')
+                .setLabel('🏆 ลีดเดอร์บอร์ด')
+                .setStyle(ButtonStyle.Secondary)
+                .setEmoji('🏆'),
+        );
+    const row2 = new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder()
+                .setCustomId('leave_open')
+                .setLabel('🏖️ แจ้งลา')
+                .setStyle(ButtonStyle.Danger)
+                .setEmoji('🏖️'),
+            new ButtonBuilder()
+                .setCustomId('leave_list')
+                .setLabel('📋 ตารางลา')
+                .setStyle(ButtonStyle.Secondary)
+                .setEmoji('📋'),
         );
 
-    await channel.send({ embeds: [embed], components: [row] });
+    await channel.send({ embeds: [embed], components: [row, row2] });
     console.log('ส่งแผงควบคุมเรียบร้อยแล้ว!');
     client.destroy(); // ปิดการทำงานของบอทหลังจากส่งเสร็จ
 });
