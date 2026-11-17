@@ -1,5 +1,6 @@
 // ไฟล์: send-panel.js (เวอร์ชันอ่านจาก Secrets)
 
+require('dotenv').config();
 const { Client, GatewayIntentBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
 
 // --- แก้ไขตรงนี้: อ่านค่าจาก Secrets โดยตรง ---
@@ -26,8 +27,9 @@ client.once('ready', async () => {
 
     try {
         const messages = await channel.messages.fetch({ limit: 50 });
-        if (messages.size > 0) await channel.bulkDelete(messages, true);
-        console.log(`ลบข้อความเก่า ${messages.size} ข้อความในห้องควบคุมเรียบร้อย`);
+        const oldPanels = messages.filter((msg) => msg.author.id === client.user.id);
+        if (oldPanels.size > 0) await channel.bulkDelete(oldPanels, true);
+        console.log(`ลบแผงเก่า ${oldPanels.size} ข้อความในห้องควบคุมเรียบร้อย`);
     } catch (error) {
         console.warn('ไม่สามารถลบข้อความเก่าได้ (อาจจะไม่มีสิทธิ์ หรือข้อความเก่าเกิน 14 วัน):', error.message);
     }

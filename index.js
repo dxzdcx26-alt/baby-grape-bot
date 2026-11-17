@@ -23,6 +23,7 @@ const {
 const cron = require("node-cron");
 const fs = require("fs");
 const axios = require("axios");
+const { createObjectCsvWriter } = require("csv-writer");
 const path = require("path");
 const express = require("express");
 const app = express();
@@ -34,12 +35,33 @@ const controlChannelId = process.env.controlChannelId;
 const logChannelId = process.env.logChannelId;
 const scoreChannelId = process.env.scoreChannelId;
 const mentionRoleId = process.env.mentionRoleId;
-let targetChannelId = process.env.targetChannelId;
 const archiveCategoryId = process.env.archiveCategoryId;
 const adminRoleId = process.env.adminRoleId;
 const googleSheetUrl = process.env.googleSheetUrl;
 
-// --- ตรวจสอบ Secrets ---
+const targetChannelStatePath = path.join(__dirname, "channelState.json");
+function getTargetChannelId() {
+    if (fs.existsSync(targetChannelStatePath)) {
+        try {
+            const saved = JSON.parse(
+                fs.readFileSync(targetChannelStatePath, "utf8"),
+            );
+            if (saved.targetChannelId) return saved.targetChannelId;
+        } catch (error) {
+            console.error("อ่าน channelState.json ไม่ได้:", error.message);
+        }
+    }
+    return process.env.targetChannelId;
+}
+function saveTargetChannelId(id) {
+    fs.writeFileSync(
+        targetChannelStatePath,
+        JSON.stringify({ targetChannelId: id }, null, 2),
+    );
+}
+let targetChannelId = getTargetChannelId();
+
+// --- ตรวจสอบ Secrets (googleSheetUrl ไม่บังคับ ใช้ log.csv แทนได้) ---
 if (
     !token ||
     !guildId ||
@@ -49,11 +71,10 @@ if (
     !mentionRoleId ||
     !targetChannelId ||
     !archiveCategoryId ||
-    !adminRoleId ||
-    !googleSheetUrl
+    !adminRoleId
 ) {
     console.error(
-        "ข้อมูลใน Secrets ไม่ครบถ้วน! กรุณาตรวจสอบทุกค่า รวมถึง googleSheetUrl",
+        "ข้อมูลใน Secrets ไม่ครบถ้วน! กรุณาตรวจสอบค่าที่จำเป็นทั้งหมด",
     );
     process.exit(1);
 }
@@ -68,6 +89,52 @@ const client = new Client({
 });
 
 const selectionStates = new Map();
+
+const ACTIVITY_OPTIONS = [
+    { label: "💰 งัดร้าน", value: "งัดร้าน" },
+    { label: "🏦 งัดธนาคาร", value: "งัดธนาคาร" },
+    { label: "📦 ลูทบ็อก", value: "ลูทบ็อก" },
+];
+const TIME_OPTIONS = [
+    {
+        label: "☀️ พีคไทม์ (+10 คะแนน , 18:00 - 02:00)",
+        value: "peak",
+    },
+    {
+        label: "🌙 นอกเวลา (+2 คะแนน , 02:00 - 17:59)",
+        value: "offpeak",
+    },
+];
+
+const logFilePath = path.join(__dirname, "log.csv");
+const logHeader = [
+    { id: "timestamp", title: "timestamp" },
+    { id: "initiator", title: "initiator" },
+    { id: "activity", title: "activity" },
+    { id: "members", title: "members" },
+    { id: "notes", title: "notes" },
+    { id: "time", title: "time" },
+    { id: "imageUrlFront", title: "imageUrlFront" },
+    { id: "imageUrlBack", title: "imageUrlBack" },
+];
+const logCsvWriter = createObjectCsvWriter({
+    path: logFilePath,
+    header: logHeader,
+    append: true,
+});
+async function writeLog(record) {
+    try {
+        if (!fs.existsSync(logFilePath) || fs.statSync(logFilePath).size === 0) {
+            await createObjectCsvWriter({
+                path: logFilePath,
+                header: logHeader,
+            }).writeRecords([]);
+        }
+        await logCsvWriter.writeRecords([record]);
+    } catch (error) {
+        console.error("เขียน log.csv ไม่ได้:", error.message);
+    }
+}
 
 // ==================================================================
 //  ส่วนของระบบคะแนน (เวอร์ชัน 2 Scoreboards)
@@ -195,27 +262,29 @@ async function archiveAndCreateNewChannel() {
                 "หาห้องเป้าหมายหรือหมวดหมู่เก็บประวัติไม่เจอ!",
             );
 
-        await originalChannel.send(
+        const countdown = await originalChannel.send(
             "**⚠️ ประกาศจากเบบี้เกรป ⚠️**\nห้องนี้กำลังจะถูกรีเซ็ตในอีก **10 วินาที** นะคร้าฟ...",
         );
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-        await originalChannel.send("...**5**...");
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        await originalChannel.send("...**4**...");
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        await originalChannel.send("...**3**...");
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        await originalChannel.send("...**2**...");
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        await originalChannel.send("...**1**...");
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        await originalChannel.send("**เริ่มทำการรีเซ็ตคับเบบี๋**");
+        for (const [text, delay] of [
+            [
+                "**⚠️ ประกาศจากเบบี้เกรป ⚠️**\nอีก **5** วินาที...",
+                5000,
+            ],
+            ["...**4**...", 1000],
+            ["...**3**...", 1000],
+            ["...**2**...", 1000],
+            ["...**1**...", 1000],
+            ["**เริ่มทำการรีเซ็ตคับเบบี๋**", 1000],
+        ]) {
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            await countdown.edit(text);
+        }
 
         const transformedPermissions =
             originalChannel.permissionOverwrites.cache.map((p) => ({
                 id: p.id,
-                allow: p.allow.bitfield.toString(),
-                deny: p.deny.bitfield.toString(),
+                allow: p.allow.bitfield,
+                deny: p.deny.bitfield,
                 type: p.type === 0 ? "role" : "member",
             }));
         const channelData = {
@@ -223,7 +292,7 @@ async function archiveAndCreateNewChannel() {
             type: originalChannel.type,
             topic: originalChannel.topic,
             position: originalChannel.position,
-            parent: originalChannel.parent,
+            parent: originalChannel.parentId,
             permissionOverwrites: transformedPermissions,
         };
         const date = new Date();
@@ -258,9 +327,8 @@ async function archiveAndCreateNewChannel() {
         );
 
         targetChannelId = newChannel.id;
-        console.log(
-            `อัปเดต ID ห้องเป้าหมายในหน่วยความจำเป็น: ${targetChannelId}`,
-        );
+        saveTargetChannelId(newChannel.id);
+        console.log(`อัปเดต ID ห้องเป้าหมายเป็น: ${targetChannelId}`);
 
         await newChannel.send(
             `hello 1975 ⋆｡˚ ☁︎ ˚｡⋆｡ \nเบบี้เกรปลบห้องเก่าสร้างห้องใหม่ให้ละคร้าฟฟ! ก็เหมือนอกไก่ต้องมีคนหมัก อกหักต้องมีคนใหม่นะคะพี่ๆ สุดท้ายนี้องุ่นโสด จุ้บๆ`,
@@ -301,18 +369,11 @@ client.on("interactionCreate", async (interaction) => {
             const activitySelect = new StringSelectMenuBuilder()
                 .setCustomId(`activity_select_menu_${interaction.user.id}`)
                 .setPlaceholder("1. เลือกประเภทกิจกรรม")
-                .addOptions([
-                    { label: "💰 งัดร้าน", value: "งัดร้าน" },
-                    { label: "🏦 งัดธนาคาร", value: "งัดธนาคาร" },
-                    { label: "📦 ลูทบ็อก", value: "ลูทบ็อก" },
-                ]);
+                .addOptions(ACTIVITY_OPTIONS);
             const timeSelect = new StringSelectMenuBuilder()
                 .setCustomId(`time_select_menu_${interaction.user.id}`)
                 .setPlaceholder("2. เลือกช่วงเวลา")
-                .addOptions([
-                    { label: "☀️ พีคไทม์ (+10 คะแนน , 18:00 - 02:00)", value: "peak" },
-                    { label: "🌙 นอกเวลา (+2 คะแนน , 02:00 - 17:59)", value: "offpeak" },
-                ]);
+                .addOptions(TIME_OPTIONS);
             const memberSelect = new UserSelectMenuBuilder()
                 .setCustomId(`member_select_menu_${interaction.user.id}`)
                 .setPlaceholder("3. เลือกสมาชิกที่เข้าร่วม")
@@ -350,19 +411,18 @@ client.on("interactionCreate", async (interaction) => {
             const newActivitySelect = StringSelectMenuBuilder.from(
                 interaction.message.components[0].components[0],
             ).setOptions(
-                interaction.message.components[0].components[0].options.map(
-                    (opt) => ({
-                        ...opt,
-                        default: opt.value === state.activity,
-                    }),
-                ),
+                ACTIVITY_OPTIONS.map((opt) => ({
+                    ...opt,
+                    default: opt.value === state.activity,
+                })),
             );
             const newTimeSelect = StringSelectMenuBuilder.from(
                 interaction.message.components[1].components[0],
             ).setOptions(
-                interaction.message.components[1].components[0].options.map(
-                    (opt) => ({ ...opt, default: opt.value === state.time }),
-                ),
+                TIME_OPTIONS.map((opt) => ({
+                    ...opt,
+                    default: opt.value === state.time,
+                })),
             );
             const newMemberSelect = UserSelectMenuBuilder.from(
                 interaction.message.components[2].components[0],
@@ -393,7 +453,8 @@ client.on("interactionCreate", async (interaction) => {
                 !state ||
                 !state.activity ||
                 !state.time ||
-                !state.members.length === 0
+                !state.members ||
+                state.members.length === 0
             ) {
                 return interaction.reply({
                     content: "ข้อมูลยังไม่ครบถ้วน!",
@@ -462,27 +523,10 @@ client.on("interactionCreate", async (interaction) => {
             await interaction.deferReply({ ephemeral: true });
             const userId = interaction.user.id;
             const state = selectionStates.get(userId);
-            if (!state) return;
-            try {
-                if (state.buttonInteraction) {
-                    const originalMessage = state.buttonInteraction.message;
-                    const disabledComponents = originalMessage.components.map(
-                        (row) => {
-                            const newRow = ActionRowBuilder.from(row);
-                            newRow.components.forEach((comp) =>
-                                comp.setDisabled(true),
-                            );
-                            return newRow;
-                        },
-                    );
-                    await state.buttonInteraction.editReply({
-                        content: "รายการนี้ถูกส่งเรียบร้อยแล้ว ✅",
-                        components: disabledComponents,
-                    });
-                }
-            } catch (err) {
-                console.log("ไม่สามารถแก้ไขข้อความเดิมได้:", err.message);
-            }
+            if (!state)
+                return interaction.editReply({
+                    content: "ไม่พบข้อมูลรายการนี้ กรุณากดปุ่มเริ่มใหม่",
+                });
             const { activity, time, members: memberIds } = state;
             let imageUrlFront, imageUrlBack, notes;
             if (interaction.customId.startsWith("heist_store_modal")) {
@@ -503,9 +547,11 @@ client.on("interactionCreate", async (interaction) => {
                     interaction.fields.getTextInputValue("notes_input") ||
                     "ไม่มี";
             } else {
-                return;
+                return interaction.editReply({
+                    content: "ฟอร์มไม่ถูกต้อง กรุณาลองใหม่",
+                });
             }
-            // --- เพิ่มส่วนนี้เข้ามา: ตรวจสอบความถูกต้องของ URL (เวอร์ชันใหม่) ---
+            // --- ตรวจสอบความถูกต้องของ URL ---
             // 1. ต้องขึ้นต้นด้วย https://cdn.discordapp.com/
             // 2. ต้องไม่มีตัวอักษรภาษาไทย
             const discordCdnRegex = /^https:\/\/((cdn|media)\.discordapp\.(com|net))\/[^\s\u0E00-\u0E7F]*$/;
@@ -526,9 +572,21 @@ client.on("interactionCreate", async (interaction) => {
             // --- จบส่วนที่เพิ่ม ---
             const scoreToAdd = time === "peak" ? 10 : 2;
             const timeText = time === "peak" ? "พีคไทม์" : "นอกเวลา";
-            const memberObjects = interaction.guild.members.cache.filter(
+            let memberObjects = interaction.guild.members.cache.filter(
                 (member) => memberIds.includes(member.id),
             );
+            if (memberObjects.size < memberIds.length) {
+                try {
+                    const fetched = await interaction.guild.members.fetch({
+                        user: memberIds,
+                    });
+                    memberObjects = fetched.filter((member) =>
+                        memberIds.includes(member.id),
+                    );
+                } catch (error) {
+                    console.error("โหลดข้อมูลสมาชิกไม่ได้:", error.message);
+                }
+            }
             if (memberObjects.size === 0) {
                 return interaction.editReply({
                     content:
@@ -555,25 +613,31 @@ client.on("interactionCreate", async (interaction) => {
             });
             saveScores(scores);
             await updateScoreboard();
-            try {
-                const payload = {
-                    timestamp: new Date().toLocaleString("th-TH", {
-                        timeZone: "Asia/Bangkok",
-                    }),
-                    initiator: interaction.user.tag,
-                    activity: activity,
-                    members: memberDisplayNames,
-                    notes: notes,
-                    imageUrlFront: imageUrlFront,
-                    imageUrlBack: imageUrlBack,
-                };
-                await axios.post(googleSheetUrl, payload);
-                console.log("ส่งข้อมูลไปที่ Google Sheets สำเร็จ!");
-            } catch (error) {
-                console.error(
-                    "เกิดข้อผิดพลาดขณะส่งข้อมูลไปที่ Google Sheets:",
-                    error.message,
-                );
+            const payload = {
+                timestamp: new Date().toLocaleString("th-TH", {
+                    timeZone: "Asia/Bangkok",
+                }),
+                initiator: interaction.user.tag,
+                activity,
+                members: memberDisplayNames.join(", "),
+                notes,
+                time,
+                imageUrlFront,
+                imageUrlBack,
+            };
+            await writeLog(payload);
+            if (googleSheetUrl) {
+                try {
+                    await axios.post(googleSheetUrl, payload, {
+                        timeout: 5000,
+                    });
+                    console.log("ส่งข้อมูลไปที่ Google Sheets สำเร็จ!");
+                } catch (error) {
+                    console.error(
+                        "ส่งข้อมูลไปที่ Google Sheets ไม่ได้:",
+                        error.message,
+                    );
+                }
             }
             // --- สร้าง Embed (เพิ่ม Field ช่วงเวลา) ---
             const embed = new EmbedBuilder()
@@ -612,9 +676,29 @@ client.on("interactionCreate", async (interaction) => {
                 content: `ผลงานใหม่จาก <@&${mentionRoleId}>`,
                 embeds: [embed],
             });
+            try {
+                if (state.buttonInteraction) {
+                    const originalMessage = state.buttonInteraction.message;
+                    const disabledComponents = originalMessage.components.map(
+                        (row) => {
+                            const newRow = ActionRowBuilder.from(row);
+                            newRow.components.forEach((comp) =>
+                                comp.setDisabled(true),
+                            );
+                            return newRow;
+                        },
+                    );
+                    await state.buttonInteraction.editReply({
+                        content: "รายการนี้ถูกส่งเรียบร้อยแล้ว ✅",
+                        components: disabledComponents,
+                    });
+                }
+            } catch (err) {
+                console.log("ไม่สามารถแก้ไขข้อความเดิมได้:", err.message);
+            }
             await interaction.editReply({
                 content:
-                    "บันทึกผลงานสำเร็จ! ข้อมูลถูกส่งไปที่ห้อง Log เรียบร้อย",
+                    "บันทึกผลงานสำเร็จ! ข้อมูลถูกเก็บใน log.csv และส่งไปที่ห้อง Log เรียบร้อย",
             });
             selectionStates.delete(userId);
         }
@@ -738,7 +822,9 @@ client.on("messageCreate", async (message) => {
 
     if (
         message.content === "!reset" &&
-        message.member?.permissions.has("Administrator")
+        message.member?.permissions.has(
+            PermissionsBitField.Flags.Administrator,
+        )
     ) {
         await message.reply("รับแซ่บคร้าฟฟ เดะจัดการให้คับเธอ (๑•᎑< ๑)♡");
         await archiveAndCreateNewChannel();
@@ -795,8 +881,9 @@ app.get("/", (req, res) => {
     res.send("Baby Grape is awake!");
 });
 
-app.listen(3000, () => {
-    console.log("เว็บเซิร์ฟเวอร์สำหรับ UptimeRobot เริ่มทำงานที่ port 3000");
+const port = process.env.PORT || 3000;
+app.listen(port, "0.0.0.0", () => {
+    console.log(`เว็บเซิร์ฟเวอร์สำหรับ UptimeRobot เริ่มทำงานที่ port ${port}`);
 });
 
 // --- ล็อกอินบอท ---

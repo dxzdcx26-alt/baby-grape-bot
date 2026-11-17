@@ -2,7 +2,12 @@ require('dotenv').config();
 const { REST, Routes, SlashCommandBuilder } = require("discord.js");
 const token = process.env.token;
 const guildId = process.env.guildId;
-const clientId = process.env.clientId; // **สำคัญ!** ต้องเพิ่ม clientId ใน Secrets ด้วย
+const clientId = process.env.clientId;
+
+if (!token || !clientId || !guildId) {
+    console.error("ต้องมี token, clientId และ guildId ใน Secrets ก่อนรันคำสั่งนี้");
+    process.exit(1);
+}
 
 const commands = [
     new SlashCommandBuilder()
