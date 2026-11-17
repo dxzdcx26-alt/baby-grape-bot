@@ -15,7 +15,10 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 client.once('ready', async () => {
     console.log('บอทพร้อมแล้ว! กำลังจะส่งแผงควบคุม...');
 
-    const guild = client.guilds.cache.first();
+    const guild = process.env.guildId
+        ? client.guilds.cache.get(process.env.guildId) ||
+          (await client.guilds.fetch(process.env.guildId).catch(() => null))
+        : client.guilds.cache.first();
     if (!guild) {
         console.error('ไม่พบเซิร์ฟเวอร์ที่บอทอยู่!');
         return client.destroy();

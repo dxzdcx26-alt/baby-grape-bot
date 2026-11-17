@@ -33,6 +33,7 @@ jobs:
           cat > .env <<'EOF'
           token=${{ secrets.TOKEN }}
           clientId=${{ secrets.CLIENT_ID }}
+          guildId=1572313951121711296
           EOF
 
       - name: Deploy slash commands

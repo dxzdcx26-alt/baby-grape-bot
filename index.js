@@ -221,6 +221,37 @@ function saveScores(scores) {
     fs.writeFileSync(scoresFilePath, JSON.stringify(scores, null, 2));
 }
 
+const scoreboardStatePath = path.join(__dirname, "scoreboardState.json");
+function getScoreboardState() {
+    if (!fs.existsSync(scoreboardStatePath)) return {};
+    try {
+        return JSON.parse(fs.readFileSync(scoreboardStatePath, "utf8"));
+    } catch {
+        return {};
+    }
+}
+function saveScoreboardState(state) {
+    fs.writeFileSync(scoreboardStatePath, JSON.stringify(state, null, 2));
+}
+async function upsertBoardMessage(channel, key, embed) {
+    const state = getScoreboardState();
+    let message = null;
+    if (state[key]) {
+        try {
+            message = await channel.messages.fetch(state[key]);
+        } catch {
+            message = null;
+        }
+    }
+    if (message) {
+        await message.edit({ embeds: [embed] });
+    } else {
+        message = await channel.send({ embeds: [embed] });
+        state[key] = message.id;
+        saveScoreboardState(state);
+    }
+}
+
 async function updateScoreboard() {
     try {
         const scores = getScores();
@@ -280,37 +311,8 @@ async function updateScoreboard() {
             monthlyEmbed.setDescription(monthlyText);
         }
 
-        // --- ค้นหาและอัปเดตข้อความที่ปักหมุดไว้ ---
-        const pinnedMessages = await channel.messages.fetchPinned();
-
-        const weeklyMessage = pinnedMessages.find(
-            (msg) =>
-                msg.author.id === client.user.id &&
-                msg.embeds[0]?.title.includes("ประจำสัปดาห์"),
-        );
-        const monthlyMessage = pinnedMessages.find(
-            (msg) =>
-                msg.author.id === client.user.id &&
-                msg.embeds[0]?.title.includes("สะสมรายเดือน"),
-        );
-
-        // อัปเดตหรือสร้างข้อความรายสัปดาห์
-        if (weeklyMessage) {
-            await weeklyMessage.edit({ embeds: [weeklyEmbed] });
-        } else {
-            const newWeeklyMsg = await channel.send({ embeds: [weeklyEmbed] });
-            await newWeeklyMsg.pin();
-        }
-
-        // อัปเดตหรือสร้างข้อความรายเดือน
-        if (monthlyMessage) {
-            await monthlyMessage.edit({ embeds: [monthlyEmbed] });
-        } else {
-            const newMonthlyMsg = await channel.send({
-                embeds: [monthlyEmbed],
-            });
-            await newMonthlyMsg.pin();
-        }
+        await upsertBoardMessage(channel, "weeklyMessageId", weeklyEmbed);
+        await upsertBoardMessage(channel, "monthlyMessageId", monthlyEmbed);
 
         console.log("อัปเดตกระดานคะแนนทั้ง 2 บอร์ดเรียบร้อย");
     } catch (error) {
