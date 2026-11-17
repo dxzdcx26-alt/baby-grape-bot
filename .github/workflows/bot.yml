@@ -17,7 +17,7 @@ jobs:
       - name: Checkout bot script
         uses: actions/checkout@v4
         with:
-          repository: marshmayris/baby-grape-bot
+          repository: dxzdcx26-alt/baby-grape-bot
           ref: main
 
       - name: Setup Node.js
@@ -32,16 +32,7 @@ jobs:
         run: |
           cat > .env <<'EOF'
           token=${{ secrets.TOKEN }}
-          guildId=${{ secrets.GUILD_ID }}
           clientId=${{ secrets.CLIENT_ID }}
-          controlChannelId=${{ secrets.CONTROL_CHANNEL_ID }}
-          logChannelId=${{ secrets.LOG_CHANNEL_ID }}
-          scoreChannelId=${{ secrets.SCORE_CHANNEL_ID }}
-          mentionRoleId=${{ secrets.MENTION_ROLE_ID }}
-          targetChannelId=${{ secrets.TARGET_CHANNEL_ID }}
-          archiveCategoryId=${{ secrets.ARCHIVE_CATEGORY_ID }}
-          adminRoleId=${{ secrets.ADMIN_ROLE_ID }}
-          googleSheetUrl=${{ secrets.GOOGLE_SHEET_URL }}
           EOF
 
       - name: Deploy slash commands
