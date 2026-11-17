@@ -2,10 +2,10 @@ require('dotenv').config();
 const { REST, Routes, SlashCommandBuilder } = require("discord.js");
 const token = process.env.token;
 const guildId = process.env.guildId;
-const clientId = process.env.clientId;
+let clientId = process.env.clientId;
 
-if (!token || !clientId || !guildId) {
-    console.error("ต้องมี token, clientId และ guildId ใน Secrets ก่อนรันคำสั่งนี้");
+if (!token) {
+    console.error("ต้องมี token ใน Secrets ก่อนรันคำสั่งนี้");
     process.exit(1);
 }
 
@@ -45,11 +45,20 @@ const rest = new REST({ version: "10" }).setToken(token);
 
 (async () => {
     try {
+        if (!clientId) {
+            const me = await rest.get(Routes.user());
+            clientId = me.id;
+        }
         console.log("กำลังลงทะเบียน Slash Commands...");
-        await rest.put(Routes.applicationGuildCommands(clientId, guildId), {
-            body: commands,
-        });
-        console.log("ลงทะเบียน Slash Commands สำเร็จ!");
+        const route = guildId
+            ? Routes.applicationGuildCommands(clientId, guildId)
+            : Routes.applicationCommands(clientId);
+        await rest.put(route, { body: commands });
+        console.log(
+            guildId
+                ? "ลงทะเบียน Slash Commands สำเร็จ!"
+                : "ลงทะเบียน Slash Commands แบบ global สำเร็จ! (อาจใช้เวลาถึง 1 ชั่วโมงก่อนโผล่)",
+        );
     } catch (error) {
         console.error(error);
     }

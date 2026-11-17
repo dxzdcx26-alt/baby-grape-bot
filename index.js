@@ -28,15 +28,15 @@ const path = require("path");
 const express = require("express");
 const app = express();
 
-// --- อ่านค่าจาก Secrets ของ Replit ---
+// --- ใช้แค่ token + clientId ที่เหลือบอทจะหาเองจากชื่อห้อง/โรล ---
 const token = process.env.token;
-const guildId = process.env.guildId;
-const controlChannelId = process.env.controlChannelId;
-const logChannelId = process.env.logChannelId;
-const scoreChannelId = process.env.scoreChannelId;
-const mentionRoleId = process.env.mentionRoleId;
-const archiveCategoryId = process.env.archiveCategoryId;
-const adminRoleId = process.env.adminRoleId;
+let guildId = process.env.guildId;
+let controlChannelId = process.env.controlChannelId;
+let logChannelId = process.env.logChannelId;
+let scoreChannelId = process.env.scoreChannelId;
+let mentionRoleId = process.env.mentionRoleId;
+let archiveCategoryId = process.env.archiveCategoryId;
+let adminRoleId = process.env.adminRoleId;
 const googleSheetUrl = process.env.googleSheetUrl;
 
 const targetChannelStatePath = path.join(__dirname, "channelState.json");
@@ -61,21 +61,8 @@ function saveTargetChannelId(id) {
 }
 let targetChannelId = getTargetChannelId();
 
-// --- ตรวจสอบ Secrets (googleSheetUrl ไม่บังคับ ใช้ log.csv แทนได้) ---
-if (
-    !token ||
-    !guildId ||
-    !controlChannelId ||
-    !logChannelId ||
-    !scoreChannelId ||
-    !mentionRoleId ||
-    !targetChannelId ||
-    !archiveCategoryId ||
-    !adminRoleId
-) {
-    console.error(
-        "ข้อมูลใน Secrets ไม่ครบถ้วน! กรุณาตรวจสอบค่าที่จำเป็นทั้งหมด",
-    );
+if (!token) {
+    console.error("ไม่พบ token ใน Secrets!");
     process.exit(1);
 }
 
@@ -87,6 +74,88 @@ const client = new Client({
         GatewayIntentBits.MessageContent,
     ],
 });
+
+let configReady = false;
+function findByName(collection, patterns) {
+    return collection.find((item) =>
+        patterns.some((pattern) => item.name.toLowerCase().includes(pattern)),
+    );
+}
+async function resolveConfig() {
+    const guild = guildId
+        ? await client.guilds.fetch(guildId).catch(() => null)
+        : client.guilds.cache.first();
+    if (!guild) throw new Error("ไม่พบเซิร์ฟเวอร์ที่บอทอยู่");
+    guildId = guild.id;
+
+    const channels = await guild.channels.fetch();
+    const roles = await guild.roles.fetch();
+    const textChannels = channels.filter(
+        (channel) => channel.type === ChannelType.GuildText,
+    );
+    const categories = channels.filter(
+        (channel) => channel.type === ChannelType.GuildCategory,
+    );
+
+    controlChannelId ||= findByName(textChannels, [
+        "control",
+        "panel",
+        "ควบคุม",
+    ])?.id;
+    logChannelId ||= findByName(textChannels, ["log", "ล็อก", "บันทึก"])?.id;
+    scoreChannelId ||= findByName(textChannels, ["score", "คะแนน", "กระดาน"])?.id;
+    archiveCategoryId ||= findByName(categories, [
+        "archive",
+        "ประวัติ",
+        "เก็บ",
+    ])?.id;
+
+    if (!targetChannelId) {
+        const heistChannel = textChannels.find(
+            (channel) =>
+                /heist|งัด|ลูท/i.test(channel.name) &&
+                ![controlChannelId, logChannelId, scoreChannelId].includes(
+                    channel.id,
+                ),
+        );
+        const normalChannel = textChannels.find(
+            (channel) =>
+                ![controlChannelId, logChannelId, scoreChannelId].includes(
+                    channel.id,
+                ) && channel.parentId !== archiveCategoryId,
+        );
+        targetChannelId = heistChannel?.id || normalChannel?.id;
+    }
+
+    mentionRoleId ||=
+        findByName(roles, ["heist", "สมาชิก", "member"])?.id ||
+        guild.roles.everyone.id;
+    adminRoleId ||=
+        findByName(roles, ["admin", "แอดมิน", "owner", "staff"])?.id ||
+        guild.roles.highest.id;
+
+    const missing = Object.entries({
+        controlChannelId,
+        logChannelId,
+        scoreChannelId,
+        targetChannelId,
+        archiveCategoryId,
+        mentionRoleId,
+        adminRoleId,
+    })
+        .filter(([, value]) => !value)
+        .map(([key]) => key);
+    if (missing.length) {
+        throw new Error(`หา ID เหล่านี้ไม่เจอ: ${missing.join(", ")}`);
+    }
+    console.log(`ใช้เซิร์ฟเวอร์ "${guild.name}" และตรวจสอบห้อง/โรลเรียบร้อย`);
+}
+async function ensureConfig() {
+    if (!configReady) {
+        await resolveConfig();
+        configReady = true;
+    }
+}
 
 const selectionStates = new Map();
 
@@ -341,21 +410,27 @@ async function archiveAndCreateNewChannel() {
 // ==================================================================
 //  Event Handlers (ศูนย์บัญชาการ)
 // ==================================================================
-client.once("ready", () => {
+client.once("ready", async () => {
     console.log(`เบบี้เกรป (${client.user.tag}) พร้อมทำงานทุกอย่างแล้วค่า! 🍇`);
-    cron.schedule(
-        "0 0 */3 * *",
-        () => {
-            archiveAndCreateNewChannel();
-        },
-        { scheduled: true, timezone: "Asia/Bangkok" },
-    );
-    console.log("ตั้งเวลาระบบเก็บห้องแชทเรียบร้อย!");
-    updateScoreboard();
+    try {
+        await ensureConfig();
+        cron.schedule(
+            "0 0 */3 * *",
+            () => {
+                archiveAndCreateNewChannel();
+            },
+            { scheduled: true, timezone: "Asia/Bangkok" },
+        );
+        console.log("ตั้งเวลาระบบเก็บห้องแชทเรียบร้อย!");
+        await updateScoreboard();
+    } catch (error) {
+        console.error("ตั้งค่าห้อง/โรลอัตโนมัติไม่สำเร็จ:", error);
+    }
 });
 
 client.on("interactionCreate", async (interaction) => {
     try {
+        await ensureConfig();
         // --- จัดการการกดปุ่ม "เริ่มบันทึกผลงาน" ---
         if (
             interaction.isButton() &&
@@ -819,6 +894,7 @@ client.on("interactionCreate", async (interaction) => {
 // --- ส่วนของ MessageCreate (เหมือนเดิม) ---
 client.on("messageCreate", async (message) => {
     if (message.author.bot) return;
+    await ensureConfig();
 
     if (
         message.content === "!reset" &&
